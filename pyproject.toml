@@ -1,0 +1,26 @@
+[project]
+name = "devdocs-mcp"
+version = "0.1.0"
+description = "MCP server for devdocs.io documentation access"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "html2text>=2025.4.15",
+    "httpx>=0.28.1",
+    "mcp>=1.27.1",
+]
+
+[project.scripts]
+devdocs-mcp = "devdocs_mcp.server:main_sync"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devdocs_mcp"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "hatchling>=1.29.0",
+]
