@@ -1,10 +1,56 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
+*.pyd
+*.pyo
+
+# Distribution / packaging
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
+MANIFEST
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.python-version
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+.pytest_cache/
+.hypothesis/
+
+# Type checkers
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environments
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

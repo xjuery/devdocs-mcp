@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""DevDocs MCP Server — provides access to devdocs.io documentation via stdio."""
+"""DevDocs MCP Server — provides access to devdocs.io documentation."""
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
+from collections.abc import AsyncIterator
 from typing import Any
 
 import html2text
 import httpx
+import uvicorn
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp import types
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 DEVDOCS_BASE = "https://devdocs.io"
 FETCH_TIMEOUT = 60.0
@@ -234,9 +240,58 @@ async def _list_available_slugs(filter_: str | None) -> None:
         print(f"{d['slug']:<{col}}  {d['name']}{version}")
 
 
+async def _prefetch_metadata() -> None:
+    """Populate doc_metadata from devdocs.io/docs.json for the allowed slugs."""
+    try:
+        async with httpx.AsyncClient(base_url=DEVDOCS_BASE, timeout=30.0, follow_redirects=True) as client:
+            r = await client.get("/docs.json")
+            if r.status_code == 200:
+                for doc in r.json():
+                    if doc["slug"] in allowed_slugs:
+                        doc_metadata[doc["slug"]] = doc
+                unknown = [s for s in allowed_slugs if s not in doc_metadata]
+                if unknown:
+                    print(f"Warning: slugs not found on devdocs.io: {unknown}", file=sys.stderr)
+    except Exception as exc:
+        print(f"Warning: could not fetch docs.json: {exc}", file=sys.stderr)
+
+
+async def _run_stdio() -> None:
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+async def _run_http(host: str, port: int, path: str, stateless: bool) -> None:
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        stateless=stateless,
+    )
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            yield
+
+    # Use Starlette only for its lifespan handling; bypass its router entirely
+    # so there are no trailing-slash redirects or path-prefix issues.
+    _starlette_lifespan = Starlette(lifespan=lifespan)
+    _mcp_path = "/" + path.strip("/")
+
+    class _ASGIApp:
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            if scope["type"] == "lifespan":
+                await _starlette_lifespan(scope, receive, send)
+            else:
+                await session_manager.handle_request(scope, receive, send)
+
+    config = uvicorn.Config(_ASGIApp(), host=host, port=port, log_level="warning")
+    print(f"DevDocs MCP server listening on http://{host}:{port}{_mcp_path}", file=sys.stderr)
+    await uvicorn.Server(config).serve()
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="DevDocs MCP Server — expose devdocs.io documentation via MCP stdio."
+        description="DevDocs MCP Server — expose devdocs.io documentation via MCP."
     )
     parser.add_argument(
         "--docs",
@@ -259,6 +314,37 @@ async def main() -> None:
             "(e.g. --list-slugs python)."
         ),
     )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="http",
+        help="Transport to use: 'http' (default, streamable-HTTP) or 'stdio'.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind when using --transport http (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind when using --transport http (default: 8000).",
+    )
+    parser.add_argument(
+        "--path",
+        default="/mcp",
+        metavar="PATH",
+        help="HTTP transport only: URL path to serve on (default: /mcp).",
+    )
+    parser.add_argument(
+        "--stateless",
+        action="store_true",
+        help=(
+            "HTTP transport only: disable session tracking. "
+            "Each request is handled independently with no shared state."
+        ),
+    )
     args = parser.parse_args()
 
     if args.list_slugs is not None:
@@ -271,29 +357,12 @@ async def main() -> None:
     global allowed_slugs
     allowed_slugs = args.docs
 
-    # Pre-fetch docs.json to populate human-readable metadata
-    try:
-        async with httpx.AsyncClient(base_url=DEVDOCS_BASE, timeout=30.0, follow_redirects=True) as client:
-            r = await client.get("/docs.json")
-            if r.status_code == 200:
-                for doc in r.json():
-                    if doc["slug"] in allowed_slugs:
-                        doc_metadata[doc["slug"]] = doc
-                unknown = [s for s in allowed_slugs if s not in doc_metadata]
-                if unknown:
-                    print(
-                        f"Warning: these slugs were not found in devdocs.io: {unknown}",
-                        file=sys.stderr,
-                    )
-    except Exception as exc:
-        print(f"Warning: could not fetch docs.json: {exc}", file=sys.stderr)
+    await _prefetch_metadata()
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    if args.transport == "http":
+        await _run_http(args.host, args.port, args.path, args.stateless)
+    else:
+        await _run_stdio()
 
 
 def main_sync() -> None:
