@@ -23,12 +23,13 @@ ssl_verify: bool | str = True
 def _http_client(timeout: float = FETCH_TIMEOUT) -> httpx.AsyncClient:
     # trust_env=True picks up HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy
     return httpx.AsyncClient(
-        base_url=DEVDOCS_BASE, 
-        follow_redirects=True, 
-        trust_env=True, 
-        timeout=timeout, 
-        verify=ssl_verify
+        base_url=DEVDOCS_BASE,
+        follow_redirects=True,
+        trust_env=True,
+        timeout=timeout,
+        verify=ssl_verify,
     )
+
 
 mcp = FastMCP("devdocs-mcp")
 
@@ -47,6 +48,7 @@ _html.body_width = 0
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _fetch_index(slug: str, client: httpx.AsyncClient) -> dict | None:
     if slug not in doc_indexes:
@@ -70,26 +72,40 @@ async def _fetch_db(slug: str, client: httpx.AsyncClient) -> dict | None:
 # Tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def list_docs() -> str:
     """List the documentation sets available on this server. Returns slugs, human-readable names, and version info."""
     rows = []
     for slug in allowed_slugs:
         meta = doc_metadata.get(slug, {})
-        rows.append({
-            "slug": slug,
-            "name": meta.get("name", slug),
-            "version": meta.get("version", ""),
-            "release": meta.get("release", ""),
-        })
+        rows.append(
+            {
+                "slug": slug,
+                "name": meta.get("name", slug),
+                "version": meta.get("version", ""),
+                "release": meta.get("release", ""),
+            }
+        )
     return json.dumps(rows, indent=2)
 
 
 @mcp.tool()
 async def search(
-    query: Annotated[str, Field(description="Case-insensitive substring to search for in entry names.")],
-    doc: Annotated[str | None, Field(description="Restrict search to this doc slug (e.g. 'python~3.13'). Omit to search all.")] = None,
-    limit: Annotated[int, Field(description="Maximum number of results to return (default 20, max 100).")] = 20,
+    query: Annotated[
+        str,
+        Field(description="Case-insensitive substring to search for in entry names."),
+    ],
+    doc: Annotated[
+        str | None,
+        Field(
+            description="Restrict search to this doc slug (e.g. 'python~3.13'). Omit to search all."
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(description="Maximum number of results to return (default 20, max 100)."),
+    ] = 20,
 ) -> str:
     """Search documentation entry names across configured docs. Returns matches with their doc slug, type category, and path — use get_entry to fetch content."""
     async with _http_client() as client:
@@ -108,12 +124,14 @@ async def search(
                 continue
             for entry in index.get("entries", []):
                 if query_lower in entry["name"].lower():
-                    results.append({
-                        "doc": slug,
-                        "name": entry["name"],
-                        "type": entry.get("type", ""),
-                        "path": entry["path"],
-                    })
+                    results.append(
+                        {
+                            "doc": slug,
+                            "name": entry["name"],
+                            "type": entry.get("type", ""),
+                            "path": entry["path"],
+                        }
+                    )
                     if len(results) >= limit:
                         break
             if len(results) >= limit:
@@ -126,8 +144,15 @@ async def search(
 
 @mcp.tool()
 async def get_entry(
-    doc: Annotated[str, Field(description="Doc slug (e.g. 'python~3.13', 'angular~20').")],
-    path: Annotated[str, Field(description="Entry path as returned by search (may include a # fragment).")],
+    doc: Annotated[
+        str, Field(description="Doc slug (e.g. 'python~3.13', 'angular~20').")
+    ],
+    path: Annotated[
+        str,
+        Field(
+            description="Entry path as returned by search (may include a # fragment)."
+        ),
+    ],
 ) -> str:
     """Fetch the full documentation content of a specific entry as Markdown. Use the doc slug and path returned by search."""
     if doc not in allowed_slugs:
@@ -157,6 +182,7 @@ async def get_entry(
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 async def _list_available_slugs(filter_: str | None) -> None:
     """Fetch docs.json and print all available slugs to stdout, then exit."""
     try:
@@ -170,7 +196,11 @@ async def _list_available_slugs(filter_: str | None) -> None:
 
     if filter_:
         needle = filter_.lower()
-        docs = [d for d in docs if needle in d["slug"].lower() or needle in d["name"].lower()]
+        docs = [
+            d
+            for d in docs
+            if needle in d["slug"].lower() or needle in d["name"].lower()
+        ]
 
     col = max((len(d["slug"]) for d in docs), default=0)
     for d in sorted(docs, key=lambda d: d["slug"]):
@@ -189,7 +219,10 @@ async def _prefetch_metadata() -> None:
                         doc_metadata[doc["slug"]] = doc
                 unknown = [s for s in allowed_slugs if s not in doc_metadata]
                 if unknown:
-                    print(f"Warning: slugs not found on devdocs.io: {unknown}", file=sys.stderr)
+                    print(
+                        f"Warning: slugs not found on devdocs.io: {unknown}",
+                        file=sys.stderr,
+                    )
     except Exception as exc:
         print(f"Warning: could not fetch docs.json: {exc}", file=sys.stderr)
 
@@ -280,7 +313,10 @@ def main_sync() -> None:
     asyncio.run(_prefetch_metadata())
 
     if args.transport == "http":
-        print(f"DevDocs MCP server listening on http://{args.host}:{args.port}{args.path}", file=sys.stderr)
+        print(
+            f"DevDocs MCP server listening on http://{args.host}:{args.port}{args.path}",
+            file=sys.stderr,
+        )
         mcp.run(
             transport="streamable-http",
             host=args.host,
