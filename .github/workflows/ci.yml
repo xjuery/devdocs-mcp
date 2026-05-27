@@ -37,4 +37,4 @@ jobs:
           python-version: "3.14"
 
       - name: Scan for vulnerabilities (pip-audit)
-        run: uvx pip-audit
+        run: uv tool run pip-audit

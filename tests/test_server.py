@@ -90,7 +90,11 @@ async def test_search_returns_matching_entries():
 
 async def test_search_respects_limit():
     server_module.allowed_slugs = ["python~3.13"]
-    index = {"entries": [{"name": f"fn{i}", "type": "fn", "path": f"p{i}"} for i in range(50)]}
+    index = {
+        "entries": [
+            {"name": f"fn{i}", "type": "fn", "path": f"p{i}"} for i in range(50)
+        ]
+    }
     with patch("devdocs_mcp.server._fetch_index", AsyncMock(return_value=index)):
         with patch("devdocs_mcp.server._http_client", return_value=null_http()):
             result = json.loads(await search("fn", doc="python~3.13", limit=3))
@@ -99,7 +103,11 @@ async def test_search_respects_limit():
 
 async def test_search_caps_limit_at_100():
     server_module.allowed_slugs = ["python~3.13"]
-    index = {"entries": [{"name": f"fn{i}", "type": "fn", "path": f"p{i}"} for i in range(200)]}
+    index = {
+        "entries": [
+            {"name": f"fn{i}", "type": "fn", "path": f"p{i}"} for i in range(200)
+        ]
+    }
     with patch("devdocs_mcp.server._fetch_index", AsyncMock(return_value=index)):
         with patch("devdocs_mcp.server._http_client", return_value=null_http()):
             result = json.loads(await search("fn", doc="python~3.13", limit=9999))
@@ -110,7 +118,9 @@ async def test_search_all_slugs_when_no_doc_filter():
     server_module.allowed_slugs = ["python~3.13", "javascript"]
     indexes = {
         "python~3.13": {"entries": [{"name": "map", "type": "fn", "path": "map"}]},
-        "javascript": {"entries": [{"name": "Array.map", "type": "method", "path": "Array/map"}]},
+        "javascript": {
+            "entries": [{"name": "Array.map", "type": "method", "path": "Array/map"}]
+        },
     }
 
     async def mock_fetch_index(slug, client):
