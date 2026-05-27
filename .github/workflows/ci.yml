@@ -12,33 +12,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
-          cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync --frozen --group dev
 
       - name: Lint & format check (Ruff)
         run: |
-          pip install ruff
-          ruff check .
-          ruff format --check .
+          uv run ruff check .
+          uv run ruff format --check .
 
       - name: Run tests
-        run: python -m pytest
+        run: uv run pytest
 
   vulnerability-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
 
       - name: Scan for vulnerabilities (pip-audit)
-        run: |
-          pip install pip-audit
-          pip-audit -r requirements.txt
+        run: uvx pip-audit

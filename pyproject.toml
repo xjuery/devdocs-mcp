@@ -23,4 +23,6 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "hatchling>=1.29.0",
+    "pytest>=8.0",
+    "ruff>=0.9",
 ]
