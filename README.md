@@ -63,6 +63,39 @@ uv run devdocs-mcp --docs python~3.13 javascript --transport stdio
 uv run devdocs-mcp --docs javascript react --host 0.0.0.0 --port 8080 --stateless
 ```
 
+### Proxy configuration
+
+The server reads standard proxy environment variables automatically — no extra flags needed:
+
+```bash
+# Route all traffic through a corporate proxy
+HTTPS_PROXY=http://proxy.corp.example.com:8080 uv run devdocs-mcp --docs python~3.13
+
+# Lowercase variants are equally supported
+https_proxy=http://proxy.corp.example.com:8080 uv run devdocs-mcp --docs python~3.13
+```
+
+Supported variables (in precedence order for HTTPS traffic): `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`.
+
+### SSL options
+
+| Flag | Description |
+|---|---|
+| `--ssl-ca-bundle PATH` | Verify server certificates against a custom CA bundle (PEM file) |
+| `--no-ssl-verify` | Disable SSL certificate verification entirely (insecure) |
+
+These two flags are mutually exclusive. By default the system CA store is used.
+
+```bash
+# Custom CA bundle (e.g. corporate MITM proxy or internal PKI)
+uv run devdocs-mcp --docs python~3.13 --ssl-ca-bundle /etc/ssl/certs/corp-ca.pem
+
+# Disable verification (not recommended for production)
+uv run devdocs-mcp --docs python~3.13 --no-ssl-verify
+```
+
+Both flags also apply to the startup metadata fetch, so the server will honour them even before it begins accepting MCP connections.
+
 ## MCP client configuration
 
 ### Claude Desktop / Claude Code (stdio)

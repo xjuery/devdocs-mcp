@@ -3,32 +3,34 @@
 
 import argparse
 import asyncio
-import contextlib
 import json
 import sys
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import Annotated
 
 import html2text
 import httpx
-import uvicorn
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp import types
-from starlette.applications import Starlette
-from starlette.routing import Mount
+from fastmcp import FastMCP
+from pydantic import Field
 
 DEVDOCS_BASE = "https://devdocs.io"
 FETCH_TIMEOUT = 60.0
 
-server = Server("devdocs-mcp")
+
+# ssl_verify: True = system CAs (default), False = no verification, str = path to CA bundle
+ssl_verify: bool | str = True
+
+
+def _http_client(timeout: float = FETCH_TIMEOUT) -> httpx.AsyncClient:
+    # trust_env=True picks up HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy
+    return httpx.AsyncClient(base_url=DEVDOCS_BASE, follow_redirects=True, trust_env=True, timeout=timeout, verify=ssl_verify)
+
+mcp = FastMCP("devdocs-mcp")
 
 # Runtime state populated on startup
 allowed_slugs: list[str] = []
-doc_metadata: dict[str, dict] = {}   # slug -> entry from docs.json
-doc_indexes: dict[str, dict] = {}    # slug -> index.json (cached)
-doc_databases: dict[str, dict] = {}  # slug -> db.json  (cached, large)
+doc_metadata: dict[str, dict] = {}
+doc_indexes: dict[str, dict] = {}
+doc_databases: dict[str, dict] = {}
 
 _html = html2text.HTML2Text()
 _html.ignore_links = False
@@ -58,160 +60,91 @@ async def _fetch_db(slug: str, client: httpx.AsyncClient) -> dict | None:
     return doc_databases[slug]
 
 
-def _text(content: str) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=content)]
-
-
 # ---------------------------------------------------------------------------
-# Tool definitions
+# Tools
 # ---------------------------------------------------------------------------
 
-@server.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(
-            name="list_docs",
-            description=(
-                "List the documentation sets available on this server. "
-                "Returns slugs, human-readable names, and version info."
-            ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
-        ),
-        types.Tool(
-            name="search",
-            description=(
-                "Search documentation entry names across configured docs. "
-                "Returns a list of matches with their doc slug, type category, "
-                "and path — use get_entry to fetch the actual content."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Case-insensitive substring to search for in entry names.",
-                    },
-                    "doc": {
-                        "type": "string",
-                        "description": "Restrict search to this doc slug (e.g. 'python~3.13'). Omit to search all.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default 20, max 100).",
-                        "default": 20,
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="get_entry",
-            description=(
-                "Fetch the full documentation content of a specific entry as Markdown. "
-                "Use the doc slug and path returned by search."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "doc": {
-                        "type": "string",
-                        "description": "Doc slug (e.g. 'python~3.13', 'angular~20').",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Entry path as returned by search (may include a # fragment).",
-                    },
-                },
-                "required": ["doc", "path"],
-            },
-        ),
-    ]
+@mcp.tool()
+async def list_docs() -> str:
+    """List the documentation sets available on this server. Returns slugs, human-readable names, and version info."""
+    rows = []
+    for slug in allowed_slugs:
+        meta = doc_metadata.get(slug, {})
+        rows.append({
+            "slug": slug,
+            "name": meta.get("name", slug),
+            "version": meta.get("version", ""),
+            "release": meta.get("release", ""),
+        })
+    return json.dumps(rows, indent=2)
 
 
-# ---------------------------------------------------------------------------
-# Tool handlers
-# ---------------------------------------------------------------------------
+@mcp.tool()
+async def search(
+    query: Annotated[str, Field(description="Case-insensitive substring to search for in entry names.")],
+    doc: Annotated[str | None, Field(description="Restrict search to this doc slug (e.g. 'python~3.13'). Omit to search all.")] = None,
+    limit: Annotated[int, Field(description="Maximum number of results to return (default 20, max 100).")] = 20,
+) -> str:
+    """Search documentation entry names across configured docs. Returns matches with their doc slug, type category, and path — use get_entry to fetch content."""
+    async with _http_client() as client:
+        query_lower = query.lower()
+        limit = min(limit, 100)
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
-    async with httpx.AsyncClient(base_url=DEVDOCS_BASE, follow_redirects=True) as client:
+        if doc and doc not in allowed_slugs:
+            return f"Error: '{doc}' is not in the allowed docs list."
 
-        # -- list_docs -------------------------------------------------------
-        if name == "list_docs":
-            rows = []
-            for slug in allowed_slugs:
-                meta = doc_metadata.get(slug, {})
-                rows.append({
-                    "slug": slug,
-                    "name": meta.get("name", slug),
-                    "version": meta.get("version", ""),
-                    "release": meta.get("release", ""),
-                })
-            return _text(json.dumps(rows, indent=2))
+        slugs = [doc] if doc else allowed_slugs
+        results: list[dict] = []
 
-        # -- search ----------------------------------------------------------
-        elif name == "search":
-            query = arguments["query"].lower()
-            doc_filter: str | None = arguments.get("doc")
-            limit = min(int(arguments.get("limit", 20)), 100)
+        for slug in slugs:
+            index = await _fetch_index(slug, client)
+            if index is None:
+                continue
+            for entry in index.get("entries", []):
+                if query_lower in entry["name"].lower():
+                    results.append({
+                        "doc": slug,
+                        "name": entry["name"],
+                        "type": entry.get("type", ""),
+                        "path": entry["path"],
+                    })
+                    if len(results) >= limit:
+                        break
+            if len(results) >= limit:
+                break
 
-            if doc_filter and doc_filter not in allowed_slugs:
-                return _text(f"Error: '{doc_filter}' is not in the allowed docs list.")
+        if not results:
+            return "No entries found matching your query."
+        return json.dumps(results, indent=2)
 
-            slugs = [doc_filter] if doc_filter else allowed_slugs
-            results: list[dict] = []
 
-            for slug in slugs:
-                index = await _fetch_index(slug, client)
-                if index is None:
-                    continue
-                for entry in index.get("entries", []):
-                    if query in entry["name"].lower():
-                        results.append({
-                            "doc": slug,
-                            "name": entry["name"],
-                            "type": entry.get("type", ""),
-                            "path": entry["path"],
-                        })
-                        if len(results) >= limit:
-                            break
-                if len(results) >= limit:
-                    break
+@mcp.tool()
+async def get_entry(
+    doc: Annotated[str, Field(description="Doc slug (e.g. 'python~3.13', 'angular~20').")],
+    path: Annotated[str, Field(description="Entry path as returned by search (may include a # fragment).")],
+) -> str:
+    """Fetch the full documentation content of a specific entry as Markdown. Use the doc slug and path returned by search."""
+    if doc not in allowed_slugs:
+        return f"Error: '{doc}' is not in the allowed docs list."
 
-            if not results:
-                return _text("No entries found matching your query.")
-            return _text(json.dumps(results, indent=2))
+    async with _http_client() as client:
+        db_key = path.split("#")[0]
 
-        # -- get_entry -------------------------------------------------------
-        elif name == "get_entry":
-            doc = arguments["doc"]
-            path = arguments["path"]
+        db = await _fetch_db(doc, client)
+        if db is None:
+            return f"Error: could not fetch content database for '{doc}'."
 
-            if doc not in allowed_slugs:
-                return _text(f"Error: '{doc}' is not in the allowed docs list.")
+        html = db.get(db_key)
+        if html is None:
+            alt = db_key.rstrip("/")
+            html = db.get(alt) or db.get(alt + "/")
 
-            # db.json keys never include the # fragment
-            db_key = path.split("#")[0]
+        if html is None:
+            available = [k for k in db if db_key.split("/")[-1] in k][:5]
+            hint = f" Similar paths: {available}" if available else ""
+            return f"Error: path '{db_key}' not found in '{doc}'.{hint}"
 
-            db = await _fetch_db(doc, client)
-            if db is None:
-                return _text(f"Error: could not fetch content database for '{doc}'.")
-
-            html = db.get(db_key)
-            if html is None:
-                # Try without trailing slash variations
-                alt = db_key.rstrip("/")
-                html = db.get(alt) or db.get(alt + "/")
-
-            if html is None:
-                available = [k for k in db if db_key.split("/")[-1] in k][:5]
-                hint = f" Similar paths: {available}" if available else ""
-                return _text(f"Error: path '{db_key}' not found in '{doc}'.{hint}")
-
-            markdown = _html.handle(html)
-            return _text(markdown.strip())
-
-        return _text(f"Unknown tool: {name}")
+        return _html.handle(html).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +154,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
 async def _list_available_slugs(filter_: str | None) -> None:
     """Fetch docs.json and print all available slugs to stdout, then exit."""
     try:
-        async with httpx.AsyncClient(base_url=DEVDOCS_BASE, timeout=30.0, follow_redirects=True) as client:
+        async with _http_client(timeout=30.0) as client:
             r = await client.get("/docs.json")
             r.raise_for_status()
             docs = r.json()
@@ -233,7 +166,6 @@ async def _list_available_slugs(filter_: str | None) -> None:
         needle = filter_.lower()
         docs = [d for d in docs if needle in d["slug"].lower() or needle in d["name"].lower()]
 
-    # Align columns for readability
     col = max((len(d["slug"]) for d in docs), default=0)
     for d in sorted(docs, key=lambda d: d["slug"]):
         version = f"  ({d['version']})" if d.get("version") else ""
@@ -243,7 +175,7 @@ async def _list_available_slugs(filter_: str | None) -> None:
 async def _prefetch_metadata() -> None:
     """Populate doc_metadata from devdocs.io/docs.json for the allowed slugs."""
     try:
-        async with httpx.AsyncClient(base_url=DEVDOCS_BASE, timeout=30.0, follow_redirects=True) as client:
+        async with _http_client(timeout=30.0) as client:
             r = await client.get("/docs.json")
             if r.status_code == 200:
                 for doc in r.json():
@@ -256,40 +188,7 @@ async def _prefetch_metadata() -> None:
         print(f"Warning: could not fetch docs.json: {exc}", file=sys.stderr)
 
 
-async def _run_stdio() -> None:
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
-
-
-async def _run_http(host: str, port: int, path: str, stateless: bool) -> None:
-    session_manager = StreamableHTTPSessionManager(
-        app=server,
-        stateless=stateless,
-    )
-
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
-        async with session_manager.run():
-            yield
-
-    # Use Starlette only for its lifespan handling; bypass its router entirely
-    # so there are no trailing-slash redirects or path-prefix issues.
-    _starlette_lifespan = Starlette(lifespan=lifespan)
-    _mcp_path = "/" + path.strip("/")
-
-    class _ASGIApp:
-        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-            if scope["type"] == "lifespan":
-                await _starlette_lifespan(scope, receive, send)
-            else:
-                await session_manager.handle_request(scope, receive, send)
-
-    config = uvicorn.Config(_ASGIApp(), host=host, port=port, log_level="warning")
-    print(f"DevDocs MCP server listening on http://{host}:{port}{_mcp_path}", file=sys.stderr)
-    await uvicorn.Server(config).serve()
-
-
-async def main() -> None:
+def main_sync() -> None:
     parser = argparse.ArgumentParser(
         description="DevDocs MCP Server — expose devdocs.io documentation via MCP."
     )
@@ -345,28 +244,46 @@ async def main() -> None:
             "Each request is handled independently with no shared state."
         ),
     )
+    ssl_group = parser.add_mutually_exclusive_group()
+    ssl_group.add_argument(
+        "--no-ssl-verify",
+        action="store_true",
+        help="Disable SSL certificate verification (insecure, use only when necessary).",
+    )
+    ssl_group.add_argument(
+        "--ssl-ca-bundle",
+        metavar="PATH",
+        help="Path to a CA certificate bundle file to use for SSL verification.",
+    )
     args = parser.parse_args()
 
     if args.list_slugs is not None:
-        await _list_available_slugs(args.list_slugs or None)
+        asyncio.run(_list_available_slugs(args.list_slugs or None))
         return
 
     if not args.docs:
         parser.error("--docs is required when not using --list-slugs")
 
-    global allowed_slugs
+    global allowed_slugs, ssl_verify
     allowed_slugs = args.docs
+    if args.no_ssl_verify:
+        ssl_verify = False
+    elif args.ssl_ca_bundle:
+        ssl_verify = args.ssl_ca_bundle
 
-    await _prefetch_metadata()
+    asyncio.run(_prefetch_metadata())
 
     if args.transport == "http":
-        await _run_http(args.host, args.port, args.path, args.stateless)
+        print(f"DevDocs MCP server listening on http://{args.host}:{args.port}{args.path}", file=sys.stderr)
+        mcp.run(
+            transport="streamable-http",
+            host=args.host,
+            port=args.port,
+            path=args.path,
+            stateless_http=args.stateless,
+        )
     else:
-        await _run_stdio()
-
-
-def main_sync() -> None:
-    asyncio.run(main())
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
