@@ -22,7 +22,13 @@ ssl_verify: bool | str = True
 
 def _http_client(timeout: float = FETCH_TIMEOUT) -> httpx.AsyncClient:
     # trust_env=True picks up HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy
-    return httpx.AsyncClient(base_url=DEVDOCS_BASE, follow_redirects=True, trust_env=True, timeout=timeout, verify=ssl_verify)
+    return httpx.AsyncClient(
+        base_url=DEVDOCS_BASE, 
+        follow_redirects=True, 
+        trust_env=True, 
+        timeout=timeout, 
+        verify=ssl_verify
+    )
 
 mcp = FastMCP("devdocs-mcp")
 
