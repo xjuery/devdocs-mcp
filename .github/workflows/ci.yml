@@ -38,3 +38,6 @@ jobs:
 
       - name: Scan for vulnerabilities (pip-audit)
         run: uv tool run pip-audit
+
+      - name: Scan for vulnerabilities (bandit)
+        run: uv tool run bandit -r . -ll -x ./.venv
